@@ -132,6 +132,9 @@ DoomGame::
 	ld hl, wDoomVars + DV_TIMER
 	dec [hl]
 	jr nz, .loop
+	ld a, [wDoomVars + DV_STATE]
+	cp 1
+	call z, DoomWin
 .exit
 	callfar DoomMusicStop
 	call DisableLCD
@@ -162,6 +165,59 @@ DoomGame::
 	ld a, [hl]
 	ldh [rOBP1], a
 	ret
+
+; level cleared: Pokemon victory fanfare + congratulations box (font replaces our tiles; the game is over anyway)
+DoomWin:
+	callfar DoomMusicStop
+	call DisableLCD
+	call ClearSprites
+	call LoadTextBoxTilePatterns
+	call LoadFontTilePatterns
+	ld hl, wTileMap
+	ld bc, SCREEN_AREA
+	ld a, ' '
+	call FillMemory
+	hlcoord 1, 4
+	ld b, 8
+	ld c, 16
+	call TextBoxBorder
+	hlcoord 3, 6
+	ld de, DoomWinText
+	call PlaceString
+	ld a, DOOM_LCDC & ~LCDC_BLOCK01 ; the game's own tile addressing (font/text box tiles)
+	ldh [rLCDC], a
+	ld a, SFX_STOP_ALL_MUSIC
+	ld [wNewSoundID], a
+	call PlaySoundWaitForCurrent
+	ld c, BANK(Music_DefeatedTrainer)
+	ld a, MUSIC_DEFEATED_GYM_LEADER
+	call PlayMusic
+	ld c, 60
+	call DelayFrames
+	ld b, 6 ; ~6 s of fanfare, or A/B/Start
+.wait
+	ld c, 60
+.sec
+	push bc
+	call DelayFrame
+	call Joypad
+	pop bc
+	ldh a, [hJoyPressed]
+	and PAD_A | PAD_B | PAD_START
+	jr nz, .done
+	dec c
+	jr nz, .sec
+	dec b
+	jr nz, .wait
+.done
+	ld a, SFX_STOP_ALL_MUSIC
+	ld [wNewSoundID], a
+	jp PlaySound
+
+DoomWinText:
+	db   "FELICIDADES!"
+	next "HAS COMPLETADO"
+	next "EL NIVEL!@"
 
 ; ---------------------------------------------------------------- input + logic
 DoomUpdate:
