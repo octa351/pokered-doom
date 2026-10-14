@@ -1,0 +1,7 @@
+gen/
+*.o
+pokered-mac
+*.sav
+*.app/
+frame_*.bmp
+mem.bin
