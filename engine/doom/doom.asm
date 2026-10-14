@@ -20,6 +20,8 @@ DEF DV_RAYP   EQU 13   ; dw ray table pointer
 DEF DV_SLOTS  EQU 15   ; next free OAM slot
 DEF DV_TMP    EQU 16   ; enemy loop counter
 DEF DV_TMP2   EQU 17   ; contact damage tick
+DEF DV_FIRE   EQU 22   ; frames until the next enemy shot
+DEF DV_PROJMODE EQU 23 ; 1 while projecting fireballs (no contact damage)
 DEF DV_RELX   EQU 18   ; enemy position relative to the player, 1/16 tile
 DEF DV_RELY   EQU 19
 DEF DV_COS    EQU 20
@@ -29,6 +31,14 @@ DEF DV_SAVE   EQU 24   ; 6 bytes: LCDC BGP OBP0 OBP1 autoBG updateSprites
 DEF DV_COLN   EQU 32   ; 20 bytes: wall steps per column (0 = no wall in range)
 DEF DV_E0     EQU 52   ; 4 bytes of sprite-emit scratch
 DEF DV_ENEMY  EQU 56   ; 6 enemies x 8 bytes
+DEF DV_SHOT   EQU 112  ; 3 fireballs x 10 bytes: x(2) y(2) life vx vy depth sx pad
+DEF DS_LIFE   EQU 4
+DEF DS_VX     EQU 5
+DEF DS_VY     EQU 6
+DEF DS_DEPTH  EQU 7
+DEF DS_SX     EQU 8
+DEF DS_STRIDE EQU 10
+DEF DOOM_NSHOT EQU 3
 DEF DE_HP     EQU 4
 DEF DE_SPR    EQU 5
 DEF DE_DEPTH  EQU 6    ; projected depth in 1/16 tile (0 = not visible)
@@ -94,6 +104,14 @@ DoomGame::
 	ld [hli], a
 	dec b
 	jr nz, .clrcol
+	ld hl, wDoomVars + DV_SHOT
+	ld b, DOOM_NSHOT * DS_STRIDE
+.clrshot
+	ld [hli], a
+	dec b
+	jr nz, .clrshot
+	ld a, 40
+	ld [wDoomVars + DV_FIRE], a
 	ld hl, wDoomVars + DV_ENEMY
 	ld de, DoomEnemyStart
 	ld b, DOOM_NENEMY
@@ -285,6 +303,7 @@ DoomUpdate:
 	dec [hl]
 .f0
 	call DoomEnemies
+	call DoomShots
 	ldh a, [hJoyPressed]
 	bit B_PAD_A, a
 	jr z, .nofire
@@ -404,6 +423,14 @@ TryMoveAxis:
 ; ---------------------------------------------------------------- enemies
 ; chase the player, hurt them when adjacent, project onto the screen (depth/sx)
 DoomEnemies:
+	xor a
+	ld [wDoomVars + DV_PROJMODE], a
+	ld a, [wDoomVars + DV_FIRE]
+	and a
+	jr z, .fired
+	dec a
+	ld [wDoomVars + DV_FIRE], a
+.fired
 	ld hl, wDoomVars + DV_ENEMY
 	ld a, DOOM_NENEMY
 	ld [wDoomVars + DV_TMP], a
@@ -448,7 +475,22 @@ DoomEnemies:
 	add hl, de
 	ld [hli], a
 	ld [hl], c
-	ret
+	; odd sprites are ranged: they throw fireballs when the player is within ~5 tiles
+	and a
+	ret z
+	cp 81
+	ret nc
+	dec hl
+	dec hl
+	ld a, [hl]
+	bit 0, a
+	ret z
+	ld a, [wDoomVars + DV_FIRE]
+	and a
+	ret nz
+	ld de, -DE_SPR
+	add hl, de
+	jp SpawnShot
 
 ; hl = enemy -> a = depth (0 = not visible), c = screen x
 .proj
@@ -486,7 +528,11 @@ DoomEnemies:
 	call .rel8
 	jp c, .cull
 	ld [wDoomVars + DV_RELY], a
+	ld a, [wDoomVars + DV_PROJMODE]
+	and a
+	jr nz, .nohit
 	; contact damage when |relx| + |rely| < 14
+	ld a, [wDoomVars + DV_RELY]
 	call .abs
 	ld b, a
 	ld a, [wDoomVars + DV_RELX]
@@ -681,6 +727,236 @@ DoomEnemies:
 .cstay
 	pop bc
 	pop hl
+	ret
+
+; hl = enemy: launch a fireball at the player (needs DV_RELX/RELY = enemy - player from the last projection)
+SpawnShot:
+	push hl
+	ld hl, wDoomVars + DV_SHOT + DS_LIFE
+	ld de, DS_STRIDE
+	ld b, DOOM_NSHOT
+.find
+	ld a, [hl]
+	and a
+	jr z, .free
+	add hl, de
+	dec b
+	jr nz, .find
+	pop hl
+	ret
+.free
+	ld a, 48
+	ld [hl], a ; lifetime in frames
+	push hl
+	ld a, [wDoomVars + DV_RELX]
+	ldh [hDividend + 2], a
+	call DoomEnemies.abs
+	ldh [hDividend], a
+	ld a, [wDoomVars + DV_RELY]
+	ldh [hDividend + 3], a
+	call DoomEnemies.abs
+	ldh [hDividend + 1], a
+	ld b, a
+	ldh a, [hDividend]
+	cp b
+	jr nc, .m
+	ld a, b
+.m
+	and a
+	jr nz, .m2
+	inc a
+.m2
+	ldh [hDivisor], a ; larger axis: becomes the speed (40/256 tile per frame)
+	ldh a, [hDividend]
+	call Norm40
+	ld b, a
+	ldh a, [hDividend + 2]
+	bit 7, a
+	ld a, b
+	jr nz, .vx
+	cpl
+	inc a
+.vx
+	ldh [hQuotient], a
+	ldh a, [hDividend + 1]
+	call Norm40
+	ld b, a
+	ldh a, [hDividend + 3]
+	bit 7, a
+	ld a, b
+	jr nz, .vy
+	cpl
+	inc a
+.vy
+	ldh [hQuotient + 1], a
+	pop hl
+	inc hl
+	ldh a, [hQuotient]
+	ld [hli], a
+	ldh a, [hQuotient + 1]
+	ld [hl], a
+	ld de, -DS_VY
+	add hl, de
+	pop de
+	ld b, 4
+.pos
+	ld a, [de]
+	inc de
+	ld [hli], a
+	dec b
+	jr nz, .pos
+	ld a, 28
+	ld [wDoomVars + DV_FIRE], a
+	ret
+
+; a = a * 40 / hDivisor
+Norm40:
+	ld l, a
+	ld h, 0
+	ld b, h
+	ld c, l
+	add hl, hl
+	add hl, hl
+	add hl, bc
+	add hl, hl
+	add hl, hl
+	add hl, hl
+	ldh a, [hDivisor]
+	ld e, a
+	call DivU16By8
+	ld a, l
+	ret
+
+; move and project the fireballs, hurt the player on contact
+DoomShots:
+	ld a, 1
+	ld [wDoomVars + DV_PROJMODE], a
+	ld hl, wDoomVars + DV_SHOT
+	ld a, DOOM_NSHOT
+	ld [wDoomVars + DV_TMP], a
+.next
+	push hl
+	call .one
+	pop hl
+	ld de, DS_STRIDE
+	add hl, de
+	ld a, [wDoomVars + DV_TMP]
+	dec a
+	ld [wDoomVars + DV_TMP], a
+	jr nz, .next
+	xor a
+	ld [wDoomVars + DV_PROJMODE], a
+	ret
+
+.one ; hl = fireball
+	ld a, l
+	ldh [hMultiplyBuffer], a
+	ld a, h
+	ldh [hMultiplyBuffer + 1], a
+	ld de, DS_LIFE
+	add hl, de
+	ld a, [hl]
+	and a
+	jr nz, .live
+	ld de, DS_DEPTH - DS_LIFE
+	add hl, de
+	ld [hl], a
+	ret
+.live
+	dec a
+	ld [hl], a
+	ld de, DS_VX - DS_LIFE
+	add hl, de
+	ld a, [hli]
+	ld b, a ; vx
+	ld c, [hl] ; vy
+	ldh a, [hMultiplyBuffer]
+	ld l, a
+	ldh a, [hMultiplyBuffer + 1]
+	ld h, a
+	ld a, b
+	add a
+	sbc a
+	ld d, a
+	ld a, [hl]
+	add b
+	ld [hli], a
+	ld a, [hl]
+	adc d
+	ld [hli], a
+	ld a, c
+	add a
+	sbc a
+	ld d, a
+	ld a, [hl]
+	add c
+	ld [hli], a
+	ld a, [hl]
+	adc d
+	ld [hl], a
+	swap a ; wall check at the new cell
+	ld c, a
+	dec hl
+	dec hl
+	ld a, [hl]
+	or c
+	ld l, a
+	ld h, HIGH(DoomMap)
+	ld a, [hl]
+	and a
+	jr z, .free
+	call .kill
+	ret
+.free
+	ld a, 127
+	ld [wDoomVars + DV_RELX], a
+	ld [wDoomVars + DV_RELY], a
+	ldh a, [hMultiplyBuffer]
+	ld l, a
+	ldh a, [hMultiplyBuffer + 1]
+	ld h, a
+	call DoomEnemies.proj
+	push af
+	push bc
+	ldh a, [hMultiplyBuffer]
+	ld l, a
+	ldh a, [hMultiplyBuffer + 1]
+	ld h, a
+	ld de, DS_DEPTH
+	add hl, de
+	pop bc
+	pop af
+	ld [hli], a
+	ld [hl], c
+	; contact: |relx| + |rely| < 6 (1/16 tile)
+	ld a, [wDoomVars + DV_RELY]
+	call DoomEnemies.abs
+	ld b, a
+	ld a, [wDoomVars + DV_RELX]
+	call DoomEnemies.abs
+	add b
+	cp 6
+	ret nc
+	ld a, [wDoomVars + DV_HP]
+	sub 10
+	jr nc, .hp
+	xor a
+.hp
+	ld [wDoomVars + DV_HP], a
+	ld a, 6
+	ld [wDoomVars + DV_HURT], a
+.kill
+	ldh a, [hMultiplyBuffer]
+	ld l, a
+	ldh a, [hMultiplyBuffer + 1]
+	ld h, a
+	ld de, DS_LIFE
+	add hl, de
+	xor a
+	ld [hl], a
+	ld de, DS_DEPTH - DS_LIFE
+	add hl, de
+	ld [hl], a
 	ret
 
 ; player shot: the nearest visible enemy under the crosshair that isn't hidden by a wall
@@ -1070,6 +1346,48 @@ DoomOAM:
 	ld [hli], a
 	dec b
 	jr nz, .hide
+	; fireballs: slots 37-39
+	ld hl, wShadowOAM + 37 * 4
+	ld de, wDoomVars + DV_SHOT + DS_DEPTH
+	ld b, DOOM_NSHOT
+.shot
+	push de
+	ld a, [de]
+	and a
+	jr z, .noshot
+	ld c, a
+	inc de
+	ld a, [de]
+	add 4
+	ld e, a
+	ld a, 127
+	sub c
+	swap a
+	and $0f
+	add 62 + 16 ; closer fireballs sit lower
+	ld [hli], a
+	ld a, e
+	ld [hli], a
+	ld a, DOOM_T_SHOT
+	ld [hli], a
+	xor a
+	ld [hli], a
+	jr .shotnext
+.noshot
+	inc hl
+	inc hl
+	inc hl
+	inc hl
+.shotnext
+	pop de
+	ld a, DS_STRIDE
+	add e
+	ld e, a
+	ld a, d
+	adc 0
+	ld d, a
+	dec b
+	jr nz, .shot
 	ld a, 20
 	ld [wDoomVars + DV_SLOTS], a
 	ld a, 1
@@ -1145,8 +1463,8 @@ TryEmit:
 	ld [wDoomVars + DV_E0 + 3], a
 	ld hl, wDoomVars + DV_SLOTS
 	add [hl]
-	cp 41
-	ret nc ; out of OAM slots
+	cp 38
+	ret nc ; out of OAM slots (37-39 belong to the fireballs)
 	; tile = DOOM_T_ENEMY + sprite * 13 (+ 4 for the near version)
 	ld a, b
 	add a

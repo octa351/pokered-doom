@@ -114,6 +114,8 @@ for par in (0, 1):
             y0 = (120 - ph) // 2; y1 = y0 + ph
             wf = WALLS[0 if n <= 24 else 1 if n <= 48 else 2][par]
         pat += [pat_tile(r, y0, y1, wf) for r in range(VROWS)]
+SHOT = ["00333300", "03222230", "32111123", "32111123", "32111123", "32111123", "03222230", "00333300"]   # enemy fireball
+group('DOOM_T_SHOT', [tuple(int(c) for row in SHOT for c in row)])
 assert len(pool) <= 256, f'tile pool {len(pool)} > 256: rerun with larger PHQ'
 
 # tables
